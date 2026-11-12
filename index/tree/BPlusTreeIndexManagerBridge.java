@@ -30,4 +30,34 @@ private class BPlusTreeIndexManagerBridge <K extends Comparable<K>, V extends Nu
         Optional<DBObject> dbObjectOptional = databaseStorageManager.select(pointer);
         return dbObjectOptional.map(dbObject -> new BinaryList<>(engineConfig, valueIndexBinaryObjectFactory, dbObject.getData()));
     }
+
+    public boolean addIndex(K identifier, V value) throws InternalOperationException, DeserializationException{
+        Optional<Pointer> pointerOptional = this.indexManager.getIndex(identifier);
+        if(pointerOptional.isPresent()){
+            Pointer pointer = pointerOptional.get();
+            Optional<DBObject> dbObjectOptional = databaseStorageManager.select(pointer);
+            if(dbObjectOptional.isEmpty()){
+                logger.error(EM_POINTER_POINTS_TO_NO_DATA, identifier, value);
+                throw new InternalOperationException("%s points to somewhere with no data, Database may be corrupted".formatted(pointer.toString()));
+            }
+            BinaryList<V> binaryList = new BinaryList<>(engineConfig, valueIndexBinaryObjectFactory, dbObjectOptional.get().getData());
+
+            int prevSize = binaryList.getData().length;
+            binaryList.addNew(value);
+            int afterSize = binaryList.getData().length;
+
+            if(afterSize == prevSize){
+                databaseStorageManager.update(pointer, dbObject -> {
+                    dbObject.modifyData(binaryList.getData());
+                });
+            } else{
+                Pointer pointerNew = databaseStorageManager.store(SCHEME_ID, collectionId, -1, binaryList.getData());
+                indexManager.addOrUpdateIndex(identifier, pointerNew);
+                databaseStorageManager.remove(pointer);
+            }
+
+            return true;
+            }
+        }
+    }
 }
