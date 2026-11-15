@@ -1,7 +1,10 @@
+import java.util.List;
+import java.util.ListIterator;
 import java.util.Optional;
 import java.util.logging.Logger;
 
-private class BPlusTreeIndexManagerBridge <K extends Comparable<K>, V extends Number & Comparable<V>> implements DuplicateQueryableIndex<K, v>{
+private class BPlusTreeIndexManagerBridge<K extends Comparable<K>, V extends Number & Comparable<V>>
+        implements DuplicateQueryableIndex<K, v> {
     private static final Logger Logger = LoggerFactory.getLogger(BPlusTreeIndexManagerBridge.class);
     private static final String EM_POINTER_POINTS_TO_NO_DATA = "while adding index key {} and value {} to index the pointer offered by index manager points to No Data";
 
@@ -12,7 +15,9 @@ private class BPlusTreeIndexManagerBridge <K extends Comparable<K>, V extends Nu
     private final DatabaseStorageManager databaseStorageManager;
     private final EngineConfig engineConfig;
 
-    public BPlusTreeIndexManagerBridge(int collectionID, EngineConfig engineConfig, UniqueQueryableIndex<K, Pointer> indexManager, IndexBinaryObjectFactory valueIndexBinaryObjectFactory, DatabaseStorageManager databaseStorageManager){
+    public BPlusTreeIndexManagerBridge(int collectionID, EngineConfig engineConfig,
+            UniqueQueryableIndex<K, Pointer> indexManager, IndexBinaryObjectFactory valueIndexBinaryObjectFactory,
+            DatabaseStorageManager databaseStorageManager) {
         this.collectionID = collectionID;
         this.engineConfig = engineConfig;
         this.indexManager = indexManager;
@@ -20,44 +25,81 @@ private class BPlusTreeIndexManagerBridge <K extends Comparable<K>, V extends Nu
         this.databaseStorageManager = databaseStorageManager;
     }
 
-    private Optional<BinaryList<V>> getBinaryList(K identifier) throws InternalOperationException{
+    private Optional<BinaryList<V>> getBinaryList(K identifier) throws InternalOperationException {
         Optional<Pointer> pointerOptional = this.indexManager.getIndex(identifier);
-        if(pointerOptional.isEmpty()){
+        if (pointerOptional.isEmpty()) {
             return Optional.empty();
         }
 
         Pointer pointer = pointerOptional.get();
         Optional<DBObject> dbObjectOptional = databaseStorageManager.select(pointer);
-        return dbObjectOptional.map(dbObject -> new BinaryList<>(engineConfig, valueIndexBinaryObjectFactory, dbObject.getData()));
+        return dbObjectOptional
+                .map(dbObject -> new BinaryList<>(engineConfig, valueIndexBinaryObjectFactory, dbObject.getData()));
     }
 
-    public boolean addIndex(K identifier, V value) throws InternalOperationException, DeserializationException{
+    public boolean addIndex(K identifier, V value) throws InternalOperationException, DeserializationException {
         Optional<Pointer> pointerOptional = this.indexManager.getIndex(identifier);
-        if(pointerOptional.isPresent()){
+        if (pointerOptional.isPresent()) {
             Pointer pointer = pointerOptional.get();
             Optional<DBObject> dbObjectOptional = databaseStorageManager.select(pointer);
-            if(dbObjectOptional.isEmpty()){
+            if (dbObjectOptional.isEmpty()) {
                 logger.error(EM_POINTER_POINTS_TO_NO_DATA, identifier, value);
-                throw new InternalOperationException("%s points to somewhere with no data, Database may be corrupted".formatted(pointer.toString()));
+                throw new InternalOperationException(
+                        "%s points to somewhere with no data, Database may be corrupted".formatted(pointer.toString()));
             }
-            BinaryList<V> binaryList = new BinaryList<>(engineConfig, valueIndexBinaryObjectFactory, dbObjectOptional.get().getData());
+            BinaryList<V> binaryList = new BinaryList<>(engineConfig, valueIndexBinaryObjectFactory,
+                    dbObjectOptional.get().getData());
 
             int prevSize = binaryList.getData().length;
             binaryList.addNew(value);
             int afterSize = binaryList.getData().length;
 
-            if(afterSize == prevSize){
+            if (afterSize == prevSize) {
                 databaseStorageManager.update(pointer, dbObject -> {
                     dbObject.modifyData(binaryList.getData());
                 });
-            } else{
+            } else {
                 Pointer pointerNew = databaseStorageManager.store(SCHEME_ID, collectionId, -1, binaryList.getData());
                 indexManager.addOrUpdateIndex(identifier, pointerNew);
                 databaseStorageManager.remove(pointer);
             }
 
             return true;
+        }
+
+        // Creating a new binary list iterator and add the object
+        byte[] bytes = new byte[BinaryList.META_SIZE + valueIndexBinaryObjectFactory.size() * 5];
+        BinaryList<V> binaryList = new BinaryList<>(engineConfig, valueIndexBinaryObjectFactory, bytes);
+        binaryList.initialize();
+        binaryList.addNew(value);
+
+        // Insert in DB
+        Pointer pointer = databaseStorageManager.store(SCHEME_ID, collectionID, -1, binaryList.getData());
+        try {
+            this.indexManager.addIndex(identifier, pointer);
+            return true;
+        } catch (IndexExistsException e) {
+            // TODO: handle exception
+            // Last time we ran this method there was no binary list existing! but before we could add index, one was created
+            // in normal situation this should not happen, if it happens that means that there was a race condition in which the current thread lost
+
+            try {
+                return addIndex(identifier, value);
+            } finally {
+                databaseStorageManager.remove(pointer);
             }
         }
+    }
+
+    public Optional<ListIterator<V>> getIndex(K identifier) throws InternalOperationException{
+        return this.getIndex(identifier, Order.DEFAULT);
+    }
+
+    public Optional<ListIterator<V>> getIndex(K identifier, Order order) throws InternalOperationException{
+        Optional<BinaryList<V>> binaryListIteratorOptional = this.getBinaryList(identifier);
+        if(binaryListInteratorOptional.isPresent()){
+            return Optional.of(binaryListIteratorOptional.get().getIterator(order));
+        }
+        return Optional.empty();
     }
 }
