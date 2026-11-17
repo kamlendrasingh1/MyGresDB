@@ -102,4 +102,66 @@ private class BPlusTreeIndexManagerBridge<K extends Comparable<K>, V extends Num
         }
         return Optional.empty();
     }
+
+    public synchronized boolean removeIndex(K identifier, V value) throws InternalOperationException, DeserializationException{
+        Optional<Pointer> pointerOptional = this.indexManager.getIndex(identifier);
+        if(pointerOptional.isEmpty()){
+            return false;
+        }
+
+        Pointer pointer = pointerOptional.get();
+        Optional<DBObject> dbObjectOptional = databaseStorageManager.select(pointer);
+        if(dbObjectOptional.isEmpty()){
+            return false;
+        }
+
+        BinaryList<V> binaryList = new BinaryList<>(engineConfig, valueIndexBinaryObjectFactory, dbObjectOptional.get().getData());
+        boolean result = binaryList.remove(value);
+
+        if(result){
+           databaseStorageManager.update(pointer, dbObject -> {
+            dbObject.modifyData(binaryList.getData());
+           }); 
+        }
+
+        this.indexManager.removeIndex(identifier);
+        ListIterator<V> iterator = binaryList.getIterator(Order.ASC);
+        if(!iterator.hasNext()){
+            databaseStorageManager.remove(pointer);
+        }
+        return result;
+    }
+
+    public int size() throws InternalOperationException{
+        return this.indexManager.size();
+    }
+
+    public LockableIterator<KeyValue<K, ListIterator<V>>> getSortedIterator(Order order) throws InternalOperationException{
+        return new LockableIterator<>(){
+            private final Iterator<KeyValue<K, Pointer>> iterator = indexManager.getSortedIterator(order);
+
+            public void lock(){
+
+            }
+
+            public void unlock(){
+
+            }
+
+            public boolean hasNext(){
+                return iterator.hasNext();
+            }
+
+            @SneakyThrows
+            @Override
+            public KeyValue<K, ListIterator<V>> next(){
+                KeyValue<K, Pointer> next = iterator.next();
+                Optional<BinaryList<V>> binaryListIteratorOptional = getBinaryList(next.key());
+                if(binaryListIteratorOptional.isPresent()){
+                    return new KeyValue<>(next.key(), binaryListIteratorOptional.get().getIterator(order));
+                }
+                throw new NoSuchElementException();
+            }
+        };
+    }
 }
